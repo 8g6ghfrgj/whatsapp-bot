@@ -1,6 +1,6 @@
 /**
  * WhatsApp Account
- * Pairing Code (Phone Number) – FINAL
+ * Pairing Code (Phone Number) – FINAL FIX
  */
 
 const path = require('path');
@@ -24,8 +24,9 @@ class WhatsAppAccount {
     this.connected = false;
     this.phoneNumber = null;
 
-    // 👇 Pairing Code الحقيقي
+    // Pairing Code الحقيقي
     this.pairingCode = null;
+    this._pairingRequested = false;
 
     this.sessionPath = path.join(
       __dirname,
@@ -40,6 +41,9 @@ class WhatsAppAccount {
     this._ensureStorage();
   }
 
+  /* =========================
+     إنشاء المجلدات والملفات
+     ========================= */
   _ensureStorage() {
     fs.ensureDirSync(this.sessionPath);
     fs.ensureDirSync(this.dataPath);
@@ -76,9 +80,9 @@ class WhatsAppAccount {
     }
   }
 
-  /**
-   * الاتصال باستخدام Pairing Code
-   */
+  /* ==================================================
+     الاتصال باستخدام Pairing Code (التوقيت الصحيح)
+     ================================================== */
   async connectWithPairing(phoneNumber) {
     this.phoneNumber = phoneNumber;
 
@@ -99,29 +103,44 @@ class WhatsAppAccount {
 
     this.sock.ev.on('creds.update', saveCreds);
 
-    try {
-      const code = await this.sock.requestPairingCode(phoneNumber);
-
-      // 👇 حفظ الرمز الحقيقي
-      this.pairingCode = code;
-
-      logger.info(`🔐 Pairing Code للحساب ${this.id}: ${code}`);
-    } catch (err) {
-      logger.error('❌ فشل إنشاء Pairing Code', err);
-      throw err;
-    }
-
-    this.sock.ev.on('connection.update', (update) => {
+    // 🔑 المتابعة الصحيحة لحالة الاتصال
+    this.sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect } = update;
 
+      // ✅ هنا فقط نطلب Pairing Code (حل 428)
+      if (
+        connection === 'connecting' &&
+        !this._pairingRequested
+      ) {
+        this._pairingRequested = true;
+
+        try {
+          const code = await this.sock.requestPairingCode(
+            this.phoneNumber
+          );
+
+          this.pairingCode = code;
+
+          logger.info(
+            `🔐 Pairing Code للحساب ${this.id}: ${code}`
+          );
+        } catch (err) {
+          this._pairingRequested = false;
+          logger.error('❌ فشل طلب Pairing Code', err);
+        }
+      }
+
+      // ✅ تم الربط
       if (connection === 'open') {
         this.connected = true;
+
         logger.info(`✅ تم ربط الحساب بنجاح: ${this.id}`);
 
         registerWhatsAppEvents(this.sock, this.id);
         processGroupQueue(this.sock, this.id);
       }
 
+      // ❌ انقطاع الاتصال
       if (connection === 'close') {
         this.connected = false;
 
@@ -133,21 +152,30 @@ class WhatsAppAccount {
           return;
         }
 
-        logger.warn(`⚠️ انقطع الاتصال (${this.id}) – إعادة المحاولة`);
+        logger.warn(
+          `⚠️ انقطع الاتصال (${this.id}) – إعادة المحاولة`
+        );
 
+        // إعادة المحاولة بنفس الرقم بعد 5 ثواني
         setTimeout(() => {
+          this._pairingRequested = false;
+          this.pairingCode = null;
           this.connectWithPairing(this.phoneNumber);
         }, 5000);
       }
     });
   }
 
+  /* =========================
+     تسجيل الخروج
+     ========================= */
   async logout() {
     try {
       if (this.sock) {
         await this.sock.logout();
         this.sock = null;
         this.connected = false;
+
         logger.info(`🚪 تم تسجيل خروج الحساب: ${this.id}`);
       }
     } catch (err) {
