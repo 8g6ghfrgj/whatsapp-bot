@@ -1,9 +1,7 @@
 /**
  * WhatsApp Accounts Manager
- * مسؤول عن:
- * - إنشاء الحسابات
- * - حفظها في الذاكرة
- * - استعادتها عند تشغيل البوت
+ * إدارة إنشاء الحسابات وحفظها واستعادتها
+ * بدون اتصال تلقائي (Pairing Code only)
  */
 
 const fs = require('fs');
@@ -37,21 +35,29 @@ function ensureAccountsFile() {
 }
 
 /**
- * تحميل الحسابات المحفوظة (بدون اتصال)
+ * استعادة الحسابات المحفوظة (بدون اتصال)
  */
 function restoreLinkedAccounts() {
   ensureAccountsFile();
 
-  const data = JSON.parse(fs.readFileSync(ACCOUNTS_FILE));
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf8'));
+  } catch (err) {
+    logger.error('❌ فشل قراءة ملف الحسابات', err);
+    return;
+  }
+
   const list = data.accounts || [];
 
   for (const acc of list) {
+    if (!acc.id) continue;
+
     const account = new WhatsAppAccount({ id: acc.id });
     accounts.set(acc.id, account);
 
-    logger.info(`🔁 تم تحميل الحساب المحفوظ: ${acc.id}`);
+    logger.info(`🔁 تم تحميل الحساب: ${acc.id}`);
     // ⚠️ لا يتم الاتصال هنا
-    // الاتصال يتم فقط عند طلب المستخدم
   }
 }
 
@@ -66,8 +72,11 @@ function createAccount() {
 
   accounts.set(id, account);
 
-  // حفظه في الملف
-  const data = JSON.parse(fs.readFileSync(ACCOUNTS_FILE));
+  let data = { accounts: [] };
+  try {
+    data = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf8'));
+  } catch (_) {}
+
   data.accounts.push({
     id,
     createdAt: new Date().toISOString()
@@ -90,8 +99,14 @@ function removeAccount(id) {
 
   accounts.delete(id);
 
-  const data = JSON.parse(fs.readFileSync(ACCOUNTS_FILE));
-  data.accounts = data.accounts.filter(a => a.id !== id);
+  let data = { accounts: [] };
+  try {
+    data = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf8'));
+  } catch (_) {}
+
+  data.accounts = data.accounts.filter(
+    (acc) => acc.id !== id
+  );
 
   fs.writeFileSync(
     ACCOUNTS_FILE,
