@@ -13,7 +13,6 @@ const {
 } = require('@whiskeysockets/baileys');
 
 const Pino = require('pino');
-
 const logger = require('../../utils/logger');
 
 // Engines
@@ -59,7 +58,8 @@ class WhatsAppAccount {
     // ملفات افتراضية
     this._ensureFile('ads/current.json', {
       type: null,
-      content: null
+      content: null,
+      caption: ''
     });
 
     this._ensureFile('replies/config.json', {
@@ -102,8 +102,8 @@ class WhatsAppAccount {
     this.sock = makeWASocket({
       auth: state,
       logger: Pino({ level: 'silent' }),
-      printQRInTerminal: true, // يظهر QR في التيرمنال (مفيد عند السيرفر)
       generateHighQualityLinkPreview: true
+      // ❌ تم إزالة printQRInTerminal (deprecated)
     });
 
     // حفظ بيانات الجلسة
@@ -113,7 +113,14 @@ class WhatsAppAccount {
     this.sock.ev.on('connection.update', (update) => {
       const { connection, lastDisconnect, qr } = update;
 
+      // ===== QR HANDLING =====
       if (qr) {
+        console.log('\n==============================');
+        console.log('📲 امسح رمز QR التالي لربط واتساب:\n');
+        console.log(qr);
+        console.log('\nافتح واتساب → الأجهزة المرتبطة → ربط جهاز');
+        console.log('==============================\n');
+
         logger.info(`📲 QR جاهز للحساب ${this.id}`);
       }
 
@@ -138,7 +145,6 @@ class WhatsAppAccount {
           logger.warn(
             `⚠️ انقطع الاتصال بالحساب ${this.id} – إعادة المحاولة...`
           );
-          // إعادة اتصال تلقائية
           this.reconnect();
         }
       }
