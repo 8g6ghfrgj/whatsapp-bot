@@ -1,6 +1,6 @@
 /**
  * WhatsApp Account
- * الربط باستخدام Pairing Code (رقم الهاتف)
+ * Pairing Code (Phone Number) – FINAL
  */
 
 const path = require('path');
@@ -24,6 +24,9 @@ class WhatsAppAccount {
     this.connected = false;
     this.phoneNumber = null;
 
+    // 👇 Pairing Code الحقيقي
+    this.pairingCode = null;
+
     this.sessionPath = path.join(
       __dirname,
       `../../storage/accounts/sessions/${id}`
@@ -37,9 +40,6 @@ class WhatsAppAccount {
     this._ensureStorage();
   }
 
-  /* =========================
-     إنشاء المجلدات والملفات
-     ========================= */
   _ensureStorage() {
     fs.ensureDirSync(this.sessionPath);
     fs.ensureDirSync(this.dataPath);
@@ -76,9 +76,9 @@ class WhatsAppAccount {
     }
   }
 
-  /* ==================================================
-     الاتصال باستخدام Pairing Code (الطريقة المعتمدة)
-     ================================================== */
+  /**
+   * الاتصال باستخدام Pairing Code
+   */
   async connectWithPairing(phoneNumber) {
     this.phoneNumber = phoneNumber;
 
@@ -99,33 +99,29 @@ class WhatsAppAccount {
 
     this.sock.ev.on('creds.update', saveCreds);
 
-    // 🔐 طلب رمز الاقتران
     try {
       const code = await this.sock.requestPairingCode(phoneNumber);
+
+      // 👇 حفظ الرمز الحقيقي
+      this.pairingCode = code;
+
       logger.info(`🔐 Pairing Code للحساب ${this.id}: ${code}`);
-      logger.info(
-        '📱 واتساب → الأجهزة المرتبطة → ربط جهاز → الربط برقم الهاتف'
-      );
     } catch (err) {
       logger.error('❌ فشل إنشاء Pairing Code', err);
       throw err;
     }
 
-    // متابعة حالة الاتصال
     this.sock.ev.on('connection.update', (update) => {
       const { connection, lastDisconnect } = update;
 
-      // ✅ تم الربط
       if (connection === 'open') {
         this.connected = true;
-
         logger.info(`✅ تم ربط الحساب بنجاح: ${this.id}`);
 
         registerWhatsAppEvents(this.sock, this.id);
         processGroupQueue(this.sock, this.id);
       }
 
-      // ❌ انقطاع الاتصال
       if (connection === 'close') {
         this.connected = false;
 
@@ -137,11 +133,8 @@ class WhatsAppAccount {
           return;
         }
 
-        logger.warn(
-          `⚠️ انقطع الاتصال (${this.id}) – إعادة المحاولة`
-        );
+        logger.warn(`⚠️ انقطع الاتصال (${this.id}) – إعادة المحاولة`);
 
-        // إعادة الاتصال بنفس الرقم
         setTimeout(() => {
           this.connectWithPairing(this.phoneNumber);
         }, 5000);
@@ -149,16 +142,12 @@ class WhatsAppAccount {
     });
   }
 
-  /* =========================
-     تسجيل الخروج
-     ========================= */
   async logout() {
     try {
       if (this.sock) {
         await this.sock.logout();
         this.sock = null;
         this.connected = false;
-
         logger.info(`🚪 تم تسجيل خروج الحساب: ${this.id}`);
       }
     } catch (err) {
