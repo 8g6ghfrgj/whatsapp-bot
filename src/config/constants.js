@@ -1,0 +1,25 @@
+export const APP = {
+  NAME: 'WhatsApp Telegram Controller',
+  VERSION: '1.0.0',
+};
+
+export const LIMITS = {
+  MAX_LINKS_EXPORT: 100000,
+  MAX_GROUPS_JOIN_PER_RUN: 20,
+};
+
+export const TIMING = {
+  MIN_ACTION_DELAY_MS: 1500,
+  MAX_ACTION_DELAY_MS: 4000,
+
+  AUTO_POST_MIN_DELAY_MS: 30000,
+  AUTO_POST_MAX_DELAY_MS: 90000,
+
+  GROUP_JOIN_DELAY_MS: 120000,
+  JOIN_REQUEST_TIMEOUT_MS: 24 * 60 * 60 * 1000,
+};
+
+export const SECURITY = {
+  MAX_RETRIES: 5,
+  SESSION_INACTIVITY_DAYS: 14,
+};
