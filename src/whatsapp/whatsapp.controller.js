@@ -5,34 +5,38 @@ import { logger } from '../logger/logger.js';
 import { PATHS } from '../config/paths.js';
 
 // ================================
-// Internal State (Singleton)
+// Internal State
 // ================================
 let browser = null;
 let page = null;
 
-let currentQR = null;          // Buffer
-let qrListener = null;         // function
 let loggedIn = false;
-let sessionStarting = false;
+let qrSent = false;
 
 let currentProfilePath = null;
 
 // ================================
 // Helpers
 // ================================
-function generateProfilePath() {
+function createProfilePath() {
   const id = `account_${Date.now()}`;
   return path.join(PATHS.CHROME_DATA, 'accounts', id);
 }
 
-function clearQR() {
-  currentQR = null;
-  qrListener = null;
+async function closeBrowser() {
+  try {
+    if (page) {
+      await page.close();
+      page = null;
+    }
+    if (browser) {
+      await browser.close();
+      browser = null;
+    }
+  } catch (_) {}
 }
 
-async function ensureBrowser(profilePath) {
-  if (browser) return;
-
+async function launchBrowser(profilePath) {
   browser = await puppeteer.launch({
     headless: false,
     args: [
@@ -44,73 +48,29 @@ async function ensureBrowser(profilePath) {
     userDataDir: profilePath,
   });
 
-  logger.info(`Launching Chrome with profile: ${profilePath}`);
-
   page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
 }
 
 // ================================
-// QR Watcher (FAST)
+// Login Detection
 // ================================
-async function watchForQR() {
-  await page.exposeFunction('onQRDetected', async (dataUrl) => {
+async function waitForLogin() {
+  const interval = setInterval(async () => {
     try {
-      const base64 = dataUrl.split(',')[1];
-      currentQR = Buffer.from(base64, 'base64');
-
-      logger.info('QR code captured');
-
-      if (qrListener) {
-        await qrListener(currentQR);
-      }
-    } catch (err) {
-      logger.error('Failed to capture QR');
-    }
-  });
-
-  await page.evaluate(() => {
-    const observer = new MutationObserver(() => {
-      const canvas = document.querySelector('canvas');
-      if (canvas) {
-        const dataUrl = canvas.toDataURL();
-        window.onQRDetected(dataUrl);
-      }
-    });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
-  });
-}
-
-// ================================
-// Login Watcher
-// ================================
-async function watchForLogin() {
-  const check = async () => {
-    try {
-      const logged = await page.evaluate(() => {
+      const isLogged = await page.evaluate(() => {
         return Boolean(
           document.querySelector('[data-testid="chat-list"]')
         );
       });
 
-      if (logged && !loggedIn) {
+      if (isLogged) {
         loggedIn = true;
-        clearQR();
-        logger.info('WhatsApp login detected');
+        qrSent = false;
+        clearInterval(interval);
+        logger.info('WhatsApp linked successfully');
       }
     } catch (_) {}
-  };
-
-  const interval = setInterval(async () => {
-    if (!page || page.isClosed()) {
-      clearInterval(interval);
-      return;
-    }
-    await check();
   }, 2000);
 }
 
@@ -120,79 +80,98 @@ async function watchForLogin() {
 
 /**
  * بدء جلسة واتساب
- * يلتقط QR فور ظهوره
+ * @param {Function} onQR callback لإرسال QR
+ * @param {Boolean} forceRestart هل نعيد تشغيل Chrome لإحضار QR جديد
  */
-export async function startWhatsAppSession(onQR) {
-  if (sessionStarting || loggedIn) {
-    logger.warn('Session already running');
-    return;
-  }
-
-  sessionStarting = true;
-  qrListener = onQR;
-
+export async function startWhatsAppSession(onQR, forceRestart = false) {
   try {
-    currentProfilePath = generateProfilePath();
+    // إذا الحساب مربوط فعليًا
+    if (loggedIn) {
+      logger.info('WhatsApp already logged in');
+      return;
+    }
+
+    // إذا نحتاج QR جديد → نغلق كل شيء ونبدأ من جديد
+    if (forceRestart) {
+      logger.info('Forcing new WhatsApp session');
+      await closeBrowser();
+      qrSent = false;
+    }
+
+    // إذا فيه QR أُرسل سابقًا ولم يُطلب إعادة
+    if (qrSent && !forceRestart) {
+      logger.info('QR already sent, waiting for scan');
+      return;
+    }
+
+    // إنشاء بروفايل جديد
+    currentProfilePath = createProfilePath();
     fs.mkdirSync(currentProfilePath, { recursive: true });
 
-    await ensureBrowser(currentProfilePath);
+    await launchBrowser(currentProfilePath);
 
+    logger.info(`Opening WhatsApp Web`);
     await page.goto('https://web.whatsapp.com', {
       waitUntil: 'domcontentloaded',
     });
 
-    await watchForQR();
-    await watchForLogin();
+    // ننتظر QR الرسمي الحقيقي
+    const qrElement = await page.waitForSelector(
+      'canvas, img[alt*="Scan"]',
+      { timeout: 60000 }
+    );
 
-    logger.info('WhatsApp not logged in (QR visible)');
+    // نلتقط QR مرة واحدة فقط
+    const qrBuffer = await qrElement.screenshot({ type: 'png' });
+    qrSent = true;
+
+    logger.info('Valid WhatsApp QR captured');
+
+    // نرسله للمستخدم
+    await onQR(qrBuffer);
+
+    // نبدأ مراقبة تسجيل الدخول
+    await waitForLogin();
   } catch (err) {
     logger.error(`Failed to start WhatsApp session: ${err.message}`);
-    sessionStarting = false;
+    await closeBrowser();
+    qrSent = false;
   }
 }
 
 /**
- * هل واتساب مسجل دخول فعليًا؟
+ * هل واتساب مربوط؟
  */
 export async function isWhatsAppLoggedIn() {
   return loggedIn;
 }
 
 /**
- * الحصول على آخر QR (إعادة إرسال فورية)
- */
-export function getCurrentQR() {
-  return currentQR;
-}
-
-/**
  * تسجيل خروج من واتساب
  */
 export async function logoutWhatsApp() {
-  if (!page || !loggedIn) return;
-
   try {
+    if (!page || !loggedIn) return;
+
     await page.evaluate(() => {
-      const menuBtn = document.querySelector('[data-testid="menu"]');
-      menuBtn?.click();
+      const menu = document.querySelector('[data-testid="menu"]');
+      menu?.click();
     });
 
     await page.waitForTimeout(1000);
 
     await page.evaluate(() => {
-      const logoutBtn = Array.from(
-        document.querySelectorAll('span')
-      ).find((el) => el.innerText.includes('تسجيل الخروج'));
-
-      logoutBtn?.click();
+      const btn = Array.from(document.querySelectorAll('span'))
+        .find(el => el.innerText.includes('تسجيل الخروج'));
+      btn?.click();
     });
 
     loggedIn = false;
-    clearQR();
+    qrSent = false;
 
     logger.info('WhatsApp logged out');
   } catch (err) {
-    logger.error('Failed to logout WhatsApp');
+    logger.error('Logout failed');
   }
 }
 
@@ -202,30 +181,18 @@ export async function logoutWhatsApp() {
 export async function destroyWhatsAppSession() {
   try {
     loggedIn = false;
-    clearQR();
-    sessionStarting = false;
+    qrSent = false;
 
-    if (page) {
-      await page.close();
-      page = null;
-    }
-
-    if (browser) {
-      await browser.close();
-      browser = null;
-    }
+    await closeBrowser();
 
     if (currentProfilePath && fs.existsSync(currentProfilePath)) {
-      fs.rmSync(currentProfilePath, {
-        recursive: true,
-        force: true,
-      });
+      fs.rmSync(currentProfilePath, { recursive: true, force: true });
     }
 
     currentProfilePath = null;
 
     logger.info('WhatsApp session destroyed');
   } catch (err) {
-    logger.error('Failed to destroy WhatsApp session');
+    logger.error('Failed to destroy session');
   }
 }
